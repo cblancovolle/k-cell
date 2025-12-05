@@ -22,4 +22,5 @@ def mahalanobis2(x, P, mu):
     Returns:
         Tensor: (1,)
     """
-    return (x - mu).T @ P @ (x - mu)
+
+    return (x - mu).view(-1, 1).T @ P @ (x - mu)

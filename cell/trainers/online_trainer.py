@@ -40,13 +40,19 @@ class OnlineTrainer:
         confidence_forget=0.1,
         confidence_norm_steepness=3,
         confidence_destroy_th=0.1,
+        gain_th=0.0,
         k_closest=4,
+        jitter=1e-6,
+        kernel_lengthscale=1.0,
     ):
         self.in_dim, self.out_dim = in_dim, out_dim
         self.agent_cls = agent_cls
         self.agent_kwargs = agent_kwargs
         self.min_points = min_points
         self.k_closest = k_closest
+        self.jitter = jitter
+        self.l = kernel_lengthscale
+        self.gain_th = gain_th
         self.confidence_forget_lmbd = confidence_forget
         self.confidence_norm_steepness = confidence_norm_steepness
         self.confidence_destroy_threshold = confidence_destroy_th
@@ -57,7 +63,7 @@ class OnlineTrainer:
         self.buffer = deque([], maxlen=min_points)
 
         self.short_term_buffer = deque(
-            [], maxlen=short_term if short_term else min_points * 2
+            [], maxlen=short_term if short_term else min_points * 3
         )
         self.agents: list[Agent] = []
 
@@ -102,7 +108,7 @@ class OnlineTrainer:
                 torch.zeros((1, 1)),
             ]
         )
-        mean, cov = new_agent.spatialization()
+        mean, cov = new_agent.spatialization(eps=self.jitter)
         # for standardization
         self.cov = torch.vstack(
             [
@@ -127,6 +133,13 @@ class OnlineTrainer:
         )
         return baseline_agent.predict_one(x_test)
 
+    def _new_agent_baseline(self, X_test):
+        new_agent: Agent = self.agent_cls(
+            *self.short_term_buffer_data,
+            **self.agent_kwargs,
+        )
+        return new_agent.predict(X_test)
+
     def distances(self, x_new, agents_idxs=slice(None)):
         means = self.mean[agents_idxs]  # (n_agents, n_features)
         covs = self.cov[agents_idxs]  # (n_agents, n_features, n_features)
@@ -148,7 +161,7 @@ class OnlineTrainer:
         self.buffer.append((x_new, y_new))
         self.short_term_buffer.append((x_new, y_new))
 
-        if self.n_agents <= 1 and (len(self.buffer) >= self.min_points):
+        if (self.n_agents <= 1) and (len(self.buffer) >= self.min_points):
             self.create_agent(*self.buffer_data)
             return dict(
                 n_agents=self.n_agents,
@@ -181,7 +194,7 @@ class OnlineTrainer:
         closest_distances, closest = torch.topk(
             distances, k=min(self.k_closest, self.n_agents), largest=False
         )
-        activations = torch.exp(-0.5 * distances).view(-1, 1)
+        activations = torch.exp(-0.5 * distances / (self.l**2)).view(-1, 1)
 
         point_has_been_processed = False
         if n_neighbors <= 1:
@@ -202,7 +215,7 @@ class OnlineTrainer:
                     self.confidence[agent_to_update] * (1 - lmb) + lmb * Ci.view(-1, 1)
                 ).float()
 
-                should_update_model = Ci.item() < 0
+                should_update_model = Ci.item() > 0
                 should_update_shape = Ci.item() > 0
             else:
                 should_update_model = Ci.item() > 0
@@ -213,7 +226,7 @@ class OnlineTrainer:
             )
             self.mean[agent_to_update], self.cov[agent_to_update] = self.agents[
                 agent_to_update
-            ].spatialization()
+            ].spatialization(eps=self.jitter)
             point_has_been_processed = should_update_model or should_update_shape
 
         if n_neighbors > 1:
@@ -252,7 +265,7 @@ class OnlineTrainer:
                 )
                 self.mean[agent_to_update], self.cov[agent_to_update] = self.agents[
                     agent_to_update
-                ].spatialization()
+                ].spatialization(eps=self.jitter)
 
                 point_has_been_processed |= should_update_model or should_update_shape
 
@@ -263,14 +276,31 @@ class OnlineTrainer:
                     self.confidence[neighbors] < -self.confidence_destroy_threshold
                 ).squeeze()
             ].view(-1)
-            n_destroyed = len(agents_to_destroy)
-            self.destroy_agent(agents_to_destroy)
+        else:
+            agents_to_destroy = closest[
+                (
+                    self.confidence[closest] < -self.confidence_destroy_threshold
+                ).squeeze()
+            ].view(-1)
+        n_destroyed = len(agents_to_destroy)
+        self.destroy_agent(agents_to_destroy)
+
         if (
             (not point_has_been_processed)
             and (n_neighbors == 0)
             and (len(self.buffer) >= self.min_points)
         ):
-            self.create_agent(*self.buffer_data)
+            X_create, y_create = self.buffer_data
+            y_hat = self.predict_many(X_create)
+            E_base = torch.abs(y_hat - y_create).mean()
+
+            y_hat_new = self._new_agent_baseline(X_create)
+            E_new = torch.abs(y_hat_new - y_create).mean()
+
+            gain = (E_base - E_new) / (E_base + 1e-8)
+            if gain > self.gain_th:
+                # Compute gain to add an agent
+                self.create_agent(*self.buffer_data)
 
         return dict(
             n_agents=self.n_agents,
@@ -295,9 +325,17 @@ class OnlineTrainer:
 
         agents_to_predict = closest
         y_propositions = self._predict_one(x_test, agents_to_predict)
-        activations = torch.exp(-0.5 * distances[agents_to_predict]) + 1e-8
+        activations = (
+            torch.exp(-0.5 * distances[agents_to_predict] / (self.l**2)) + 1e-8
+        )
         total_activations = torch.sum(activations)
         weights = activations / total_activations
 
         y_hat = torch.sum(y_propositions * weights, dim=0).view(1, self.out_dim)
         return y_hat
+
+    def predict_many(self, X_test: Tensor):
+        y_hat = []
+        for x_test in X_test:
+            y_hat += [self.predict_one(x_test)]
+        return torch.vstack(y_hat)
