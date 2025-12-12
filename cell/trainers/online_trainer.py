@@ -27,6 +27,12 @@ from cell.agents import Agent
 from cell.common.stats import mahalanobis2
 
 
+def clipmin_if_all(x: Tensor, clip_eps=1e-8):
+    if torch.all(x < clip_eps):
+        return x.clip(min=clip_eps)
+    return x
+
+
 class OnlineTrainer:
     def __init__(
         self,
@@ -51,6 +57,7 @@ class OnlineTrainer:
         self.min_points = min_points
         self.k_closest = k_closest
         self.jitter = jitter
+        self.clip_eps = torch.as_tensor(1e-8)
         self.l = kernel_lengthscale
         self.gain_th = gain_th
         self.confidence_forget_lmbd = confidence_forget
@@ -70,6 +77,8 @@ class OnlineTrainer:
         self.cov = torch.empty((0, in_dim, in_dim))  # for standardization
         self.mean = torch.empty((0, in_dim))  # for standardization
         self.confidence = torch.empty((0, 1))
+        self._creation_step = torch.empty((0, 1))
+        self.step = torch.as_tensor(0)
 
     @property
     def n_agents(self):
@@ -94,6 +103,7 @@ class OnlineTrainer:
         self.cov = self.cov[mask]
         self.mean = self.mean[mask]
         self.confidence = self.confidence[mask]
+        self._creation_step = self._creation_step[mask]
         self.agents = [a for id, a in enumerate(self.agents) if id not in agent_idxs]
 
     def create_agent(self, ini_X: Tensor, ini_y: Tensor):
@@ -101,6 +111,12 @@ class OnlineTrainer:
             ini_X,
             ini_y,
             **self.agent_kwargs,
+        )
+        self._creation_step = torch.vstack(
+            [
+                self._creation_step,
+                self.step,
+            ]
         )
         self.confidence = torch.vstack(
             [
@@ -157,7 +173,16 @@ class OnlineTrainer:
         mus = torch.vstack(mus)
         return mus
 
+    def _age(self):
+        return self.step - self._creation_step
+
+    def _activation(self, x_new: Tensor):
+        distances = self.distances(x_new.view(-1)).view(self.n_agents)
+        activations = torch.exp(-0.5 * distances / (self.l**2)).view(-1, 1)
+        return activations
+
     def learn_one(self, x_new: Tensor, y_new: Tensor):
+        self.step += 1
         self.buffer.append((x_new, y_new))
         self.short_term_buffer.append((x_new, y_new))
 
@@ -171,6 +196,9 @@ class OnlineTrainer:
                 point_ingested=False,
                 min_mahalanobis_dist=np.nan,
                 neighbors=[],
+                max_activation=0,
+                mean_age=0,
+                mean_confidence=0,
             )
         elif self.n_agents <= 1:
             # self.buffer.append((x_new, y_new))
@@ -182,6 +210,9 @@ class OnlineTrainer:
                 point_ingested=False,
                 min_mahalanobis_dist=np.nan,
                 neighbors=[],
+                max_activation=0,
+                mean_age=0,
+                mean_confidence=0,
             )
 
         # check neighbors
@@ -209,13 +240,13 @@ class OnlineTrainer:
             )
 
             if n_neighbors == 1:
-                # update confidence
                 lmb = self.confidence_forget_lmbd
                 self.confidence[agent_to_update] = (
                     self.confidence[agent_to_update] * (1 - lmb) + lmb * Ci.view(-1, 1)
                 ).float()
+                # update confidence
 
-                should_update_model = Ci.item() > 0
+                should_update_model = Ci.item() < 0
                 should_update_shape = Ci.item() > 0
             else:
                 should_update_model = Ci.item() > 0
@@ -231,8 +262,12 @@ class OnlineTrainer:
 
         if n_neighbors > 1:
             y_propositions = self._predict_one(x_new, neighbors)
-            total_activation = torch.sum(activations[neighbors]) + 1e-8
-            weights = activations[neighbors] / total_activation
+            total_activation = (
+                torch.sum(clipmin_if_all(activations[neighbors], self.clip_eps)) + 1e-8
+            )
+            weights = (
+                clipmin_if_all(activations[neighbors], self.clip_eps) / total_activation
+            )
             y_hat = torch.sum(y_propositions * weights, dim=0)
             E = torch.abs(y_new - y_hat).mean()
 
@@ -240,8 +275,13 @@ class OnlineTrainer:
             for i in range(n_neighbors):
                 mask = torch.arange(n_neighbors) != i
                 neighbors_mi = neighbors[mask]
-                total_activation_mi = torch.sum(activations[neighbors_mi])
-                weights_mi = activations[neighbors_mi] / total_activation_mi
+                total_activation_mi = torch.sum(
+                    clipmin_if_all(activations[neighbors_mi], self.clip_eps)
+                )
+                weights_mi = (
+                    clipmin_if_all(activations[neighbors_mi], self.clip_eps)
+                    / total_activation_mi
+                )
                 y_hat_mi = torch.sum(y_propositions[mask] * weights_mi, dim=0)
                 Emi += [torch.abs(y_new.view(-1) - y_hat_mi).mean()]
 
@@ -310,6 +350,9 @@ class OnlineTrainer:
             point_ingested=point_has_been_processed,
             min_mahalanobis_dist=distances.min().numpy(),
             neighbors=neighbors.numpy(),
+            max_activation=activations.max().numpy(),
+            mean_age=self._age().mean().numpy(),
+            mean_confidence=self.confidence.mean().numpy(),
         )
 
     def predict_one(self, x_test: Tensor):
@@ -325,8 +368,8 @@ class OnlineTrainer:
 
         agents_to_predict = closest
         y_propositions = self._predict_one(x_test, agents_to_predict)
-        activations = (
-            torch.exp(-0.5 * distances[agents_to_predict] / (self.l**2)) + 1e-8
+        activations = clipmin_if_all(
+            torch.exp(-0.5 * distances[agents_to_predict] / (self.l**2)), self.clip_eps
         )
         total_activations = torch.sum(activations)
         weights = activations / total_activations
