@@ -25,12 +25,7 @@ from torch import Tensor, LongTensor
 from collections import deque
 from cell.agents import Agent
 from cell.common.stats import mahalanobis2
-
-
-def clipmin_if_all(x: Tensor, clip_eps=1e-8):
-    if torch.all(x < clip_eps):
-        return x.clip(min=clip_eps)
-    return x
+from cell.common.utils import clipmin_if_all
 
 
 class OnlineTrainer:
@@ -176,7 +171,7 @@ class OnlineTrainer:
     def _age(self):
         return self.step - self._creation_step
 
-    def _activation(self, x_new: Tensor):
+    def _activations(self, x_new: Tensor):
         distances = self.distances(x_new.view(-1)).view(self.n_agents)
         activations = torch.exp(-0.5 * distances / (self.l**2)).view(-1, 1)
         return activations
@@ -361,7 +356,6 @@ class OnlineTrainer:
             self.n_agents
         )
         neighbors = torch.where(neighbors_mask)[0]
-        n_neighbors = len(neighbors)
         _, closest = torch.topk(
             distances.view(-1), k=min(self.k_closest, self.n_agents), largest=False
         )
