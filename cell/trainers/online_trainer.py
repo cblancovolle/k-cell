@@ -69,11 +69,17 @@ class OnlineTrainer:
         )
         self.agents: list[Agent] = []
 
-        self.cov = torch.empty((0, in_dim, in_dim))  # for standardization
-        self.mean = torch.empty((0, in_dim))  # for standardization
-        self.confidence = torch.empty((0, 1))
-        self._creation_step = torch.empty((0, 1))
-        self.step = torch.as_tensor(0)
+        self.cov = torch.empty(
+            (0, in_dim, in_dim), dtype=torch.float32
+        )  # for standardization
+        self.mean = torch.empty((0, in_dim), dtype=torch.float32)  # for standardization
+        self.confidence = torch.empty((0, 1), dtype=torch.float32)
+        self._creation_step = torch.empty((0, 1), dtype=torch.float32)
+        self.step = torch.as_tensor(0, dtype=torch.float32)
+
+    @property
+    def dtype(self):
+        return torch.float32
 
     @property
     def n_agents(self):
@@ -82,12 +88,12 @@ class OnlineTrainer:
     @property
     def buffer_data(self):
         X, y = map(torch.vstack, zip(*self.buffer))
-        return X.double(), y.double()
+        return X, y
 
     @property
     def short_term_buffer_data(self):
         X, y = map(torch.vstack, zip(*self.short_term_buffer))
-        return X.double(), y.double()
+        return X, y
 
     def reset(self):
         self.buffer.clear()

@@ -4,7 +4,7 @@ from torch import Tensor
 from cell.agents.linear_agent import LinearAgent
 from cell.common.rls import rls_predict
 from cell.common.utils import clipmin_if_all
-from ..trainers.online_trainer import OnlineTrainer
+from cell.trainers.online_trainer import OnlineTrainer
 
 
 class LinearBatchPredictorWrapper:
@@ -26,7 +26,7 @@ class LinearBatchPredictorWrapper:
         closest_distances, closest_k = torch.topk(
             distances, k=self.trainer.k_closest, dim=1, largest=False
         )  # (b_size, k, 1)
-        closest_activations = clipmin_if_all(
+        closest_activations = torch.vmap(clipmin_if_all)(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))
         )
         closest_params = params[closest_k.squeeze()]  # (b_size, k, in_dim+1, out_dim)
