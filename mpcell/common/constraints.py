@@ -28,14 +28,20 @@ class Constraint:
 
 
 class LinearConstraint(Constraint):
-    def __init__(self, A, b):
+    def __init__(self, A, b, sense="leq"):
+        assert sense in ["leq", "geq"]
         self.A = A
         self.b = b
+        self.sense = sense
 
     def __call__(self, x):
+        if self.sense == "geq":
+            return geq(self.A, self.b)(x)
         return leq(self.A, self.b)(x)
 
     def __repr__(self):
+        if self.sense == "geq":
+            return f"{self.A} @ x >= {self.b}"
         return f"{self.A} @ x <= {self.b}"
 
 

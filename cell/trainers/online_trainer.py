@@ -25,7 +25,9 @@ from torch import Tensor, LongTensor
 from collections import deque
 from cell.agents import Agent
 from cell.common.stats import mahalanobis2
+
 from cell.common.utils import clipmin_if_all
+from cell.common.utils import clipmin_first_if_all
 
 
 class OnlineTrainer:
@@ -368,7 +370,7 @@ class OnlineTrainer:
 
         agents_to_predict = closest
         y_propositions = self._predict_one(x_test, agents_to_predict)
-        activations = clipmin_if_all(
+        activations = clipmin_first_if_all(
             torch.exp(-0.5 * distances[agents_to_predict] / (self.l**2)), self.clip_eps
         )
         total_activations = torch.sum(activations)

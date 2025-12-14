@@ -3,7 +3,8 @@ import torch
 from torch import Tensor
 from cell.agents.linear_agent import LinearAgent
 from cell.common.rls import rls_predict
-from cell.common.utils import clipmin_if_all
+
+from cell.common.utils import clipmin_if_all, clipmin_first_if_all
 from cell.trainers.online_trainer import OnlineTrainer
 
 

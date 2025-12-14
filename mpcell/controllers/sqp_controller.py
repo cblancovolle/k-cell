@@ -2,6 +2,7 @@ from numpy import ndarray
 from cell.agents.linear_agent import LinearAgent
 from cell.trainers.online_trainer import OnlineTrainer
 from mpcell.common.constraints import LinearConstraint
+from mpcell.common.utils import quad_form
 from mpcell.wrappers.linearizer_wrapper import StateActionLinearizerWrapper
 from casadi import *
 
@@ -17,11 +18,16 @@ class SQPController:
         horizon,
         state_constraints=[],
         action_constraints=[],
+        conservatism_coef=1e-3,
+        solver="osqp",
+        error_on_fail=False,
     ):
         assert model.agent_cls in [LinearAgent]
+        assert solver in ["osqp", "ipopt"]
         self.model = model
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.in_dim = state_dim + action_dim
         self.linearizer: StateActionLinearizerWrapper = StateActionLinearizerWrapper(
             model, state_dim, action_dim
         )
@@ -30,6 +36,9 @@ class SQPController:
 
         self.state_constraints: list[LinearConstraint] = state_constraints
         self.action_constraints: list[LinearConstraint] = action_constraints
+        self.conservatism_coef = conservatism_coef
+        self.solver = solver
+        self.error_on_fail = error_on_fail
 
     def reset(self):
         self.u_prev = None
@@ -38,16 +47,30 @@ class SQPController:
         horizon = self.horizon
         state_dim = self.state_dim
         action_dim = self.action_dim
+        in_dim = self.in_dim
 
-        opti = Opti("conic")
-        opti.solver(
-            "osqp",
-            {
-                "error_on_fail": False,
-                # "warm_start_dual": False,
-                # "warm_start_primal": False,
-            },
-        )
+        if self.solver == "osqp":
+            opti = Opti("conic")
+            opti.solver(
+                "osqp",
+                {
+                    "error_on_fail": self.error_on_fail,
+                    # "warm_start_dual": False,
+                    # "warm_start_primal": False,
+                },
+            )
+        else:
+            opti = Opti()
+            opti.solver(
+                "ipopt",
+                {
+                    "error_on_fail": self.error_on_fail,
+                    "ipopt.print_level": 0,
+                    "ipopt.sb": "yes",
+                    "ipopt.max_iter": 100,
+                    "print_time": 0,
+                },
+            )
 
         # Symbolic Parameters
         x_prev = opti.parameter(horizon + 1, state_dim)
@@ -58,6 +81,9 @@ class SQPController:
         )  # -> (horizon+1, state_dim, state_dim)
         B = opti.parameter(horizon, action_dim * state_dim)
         c = opti.parameter(horizon, 1 * state_dim)
+
+        mean = opti.parameter(horizon, in_dim)
+        precision = opti.parameter(horizon, in_dim * in_dim)
 
         # Symbolic Variables
         x = opti.variable(horizon + 1, state_dim)
@@ -84,12 +110,24 @@ class SQPController:
             for state_constraint in self.state_constraints:
                 opti.subject_to(state_constraint(x[t, :]) <= 0)
 
+        # Introspection term
+        conservative_obj = 0
+        for t in range(0, u.shape[0]):
+            mu = mean[t, :]
+            sigma = precision[t, :].reshape((in_dim, in_dim))
+            conservative_obj = conservative_obj + quad_form(
+                (horzcat(x[t, :], u[t, :]) - mu).T, sigma
+            )
+
         task_objective = cost_fn(x, u, **cost_kwargs)
-        objective = task_objective
+        objective = task_objective + self.conservatism_coef * conservative_obj
         opti.minimize(objective)
 
-        problem = opti.to_function("F", [x0, x_prev, u, A, B, c], [x, u, objective])
+        problem = opti.to_function(
+            "F", [x0, x_prev, u, A, B, c, mean, precision], [x, u, objective]
+        )
         self.problem = problem
+        self.opti = opti
 
     def solve_local_QP(self, x0, x_prev, u_prev, return_infos=True):
         (A, B, c), (mean, covariance) = self.linearizer.local_model_many(
@@ -99,7 +137,16 @@ class SQPController:
         B_flat = B.reshape(-1, self.action_dim * self.state_dim, order="F")
         c_flat = c.reshape(-1, 1 * self.state_dim, order="F")
 
-        x, u, cost = self.problem(x0, x_prev, u_prev, A_flat, B_flat, c_flat)
+        mean = mean[:, 0].reshape(self.horizon, self.in_dim)
+        precision = np.linalg.inv(covariance[:, 0]).reshape(
+            self.horizon, self.in_dim * self.in_dim, order="F"
+        )
+        # print("Covariance:", covariance[:, 0])
+        print("Eigenvalues:", np.linalg.eigvals(covariance[:, 0]).max())
+
+        x, u, cost = self.problem(
+            x0, x_prev, u_prev, A_flat, B_flat, c_flat, mean, precision
+        )
         if return_infos:
             return (x.toarray(), u.toarray(), cost.toarray()), {
                 "A": A,
@@ -150,6 +197,7 @@ class SQPController:
             if not accepted:
                 break
 
+            u_prev = u_candidate
             x_prev = x_nl
             infos[f"sqp_iter_{i}"] = {
                 "alpha": alpha,
