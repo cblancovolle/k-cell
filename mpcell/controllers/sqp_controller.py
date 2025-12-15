@@ -21,6 +21,10 @@ class SQPController:
         conservatism_coef=1e-3,
         solver="osqp",
         error_on_fail=False,
+        max_sqp_iters=5,
+        alpha_decay=0.5,
+        min_alpha=1e-3,
+        lin_error_tol=0.1,
     ):
         assert model.agent_cls in [LinearAgent]
         assert solver in ["osqp", "ipopt"]
@@ -39,6 +43,10 @@ class SQPController:
         self.conservatism_coef = conservatism_coef
         self.solver = solver
         self.error_on_fail = error_on_fail
+        self.max_sqp_iter = max_sqp_iters
+        self.alpha_decay = alpha_decay
+        self.min_alpha = min_alpha
+        self.lin_error_tol = lin_error_tol
 
     def reset(self):
         self.u_prev = None
@@ -168,13 +176,13 @@ class SQPController:
             x0, u_prev
         )  # (horizon+1, state_dim) including x0
 
-        max_sqp_iters = 5
-        alpha_decay = 0.5
-        min_alpha = 1e-3
-        lin_error_tol = 0.1
+        max_sqp_iter = self.max_sqp_iter
+        alpha_decay = self.alpha_decay
+        min_alpha = self.min_alpha
+        lin_error_tol = self.lin_error_tol
 
         infos = {}
-        for i in range(max_sqp_iters):
+        for i in range(max_sqp_iter):
             (x_lin, u_qp, cost), solve_infos = self.solve_local_QP(
                 x0, x_prev, u_prev, return_infos=True
             )

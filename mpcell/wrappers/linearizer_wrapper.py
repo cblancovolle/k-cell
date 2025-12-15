@@ -77,7 +77,7 @@ class StateActionLinearizerWrapper:
         closest_distances, closest_k = torch.topk(
             distances, k=self.trainer.k_closest, largest=False, dim=1
         )  # (b_size, k)
-        closest_activations = torch.vmap(clipmin_first_if_all)(
+        closest_activations = torch.vmap(clipmin_if_all)(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))
         )  # (b_size, k)
         closest_params = params[closest_k]  # (b_size, k, in_dim + 1, out_dim)

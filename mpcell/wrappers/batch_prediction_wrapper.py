@@ -1,3 +1,4 @@
+from numpy import ndarray
 import torch
 
 from torch import Tensor
@@ -12,15 +13,27 @@ class LinearBatchPredictorWrapper:
     def __init__(self, trainer: OnlineTrainer):
         assert trainer.agent_cls in [LinearAgent]
         self.trainer = trainer
+        self.update_params()
 
     def update_params(self):
         self.params = torch.stack(
             [a.theta for a in self.trainer.agents]
         )  # (n_agents, in_dim + 1, out_dim)
 
+    def batch_closest_activations(self, X_test: Tensor):
+        b_size = X_test.size(0)
+        trainer = self.trainer
+        distances = torch.vmap(trainer.distances)(X_test)
+        closest_distances, closest_k = torch.topk(
+            distances, k=self.trainer.k_closest, dim=1, largest=False
+        )  # (b_size, k, 1)
+        closest_activations = torch.vmap(clipmin_if_all)(
+            torch.exp(-0.5 * closest_distances / (trainer.l**2))
+        )
+        return closest_activations # (b_size, k)
+
     def predict_batch(self, X_test: Tensor):
         b_size = X_test.size(0)
-        self.update_params()
         trainer, params = self.trainer, self.params
 
         distances = torch.vmap(trainer.distances)(X_test)  # (b_size, n_agents, 1)
@@ -45,3 +58,27 @@ class LinearBatchPredictorWrapper:
         )  # (b_size, k, 1)
         final_prediction = torch.sum(predictions * weights, dim=1)  # (b_size, out_dim)
         return final_prediction
+
+    def predict_trajectory_batch(self, state_ini: ndarray, actions: ndarray):
+        self.update_params()
+        assert len(actions.shape) == 3
+        assert len(state_ini.shape) == 2
+        assert state_ini.shape[0] == actions.shape[0]
+        b_size, horizon, action_dim = actions.shape
+        _, state_dim = state_ini.shape
+
+        current_state = torch.as_tensor(state_ini, dtype=self.trainer.dtype).view(
+            b_size, state_dim
+        )
+        actions = torch.as_tensor(actions, dtype=self.trainer.dtype).view(
+            b_size, horizon, action_dim
+        )
+
+        states = [current_state.clone()]
+        for i in range(horizon):
+            x_test = torch.hstack(
+                (current_state, actions[:, i])
+            )  # (b_size, state_dim + action_dim)
+            current_state = self.predict_batch(x_test)  # (b_size, state_dim)
+            states += [current_state.clone()]
+        return torch.stack(states, dim=1)
