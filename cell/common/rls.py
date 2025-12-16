@@ -31,7 +31,7 @@ def fit_linear_regression(X, y, weights, l1_penalty=1e-3):
     return parameters
 
 
-def rls_init(X: Tensor, y: Tensor, jitter=1e-8):
+def rls_init(X: Tensor, y: Tensor, jitter=1e-6):
     """
     Initialize theta and P from a batch in PyTorch
 

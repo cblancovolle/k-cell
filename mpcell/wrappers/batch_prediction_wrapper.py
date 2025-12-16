@@ -13,7 +13,6 @@ class LinearBatchPredictorWrapper:
     def __init__(self, trainer: OnlineTrainer):
         assert trainer.agent_cls in [LinearAgent]
         self.trainer = trainer
-        self.update_params()
 
     def update_params(self):
         self.params = torch.stack(
@@ -25,12 +24,15 @@ class LinearBatchPredictorWrapper:
         trainer = self.trainer
         distances = torch.vmap(trainer.distances)(X_test)
         closest_distances, closest_k = torch.topk(
-            distances, k=self.trainer.k_closest, dim=1, largest=False
+            distances,
+            k=min(self.trainer.n_agents, self.trainer.k_closest),
+            dim=1,
+            largest=False,
         )  # (b_size, k, 1)
         closest_activations = torch.vmap(clipmin_if_all)(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))
         )
-        return closest_activations # (b_size, k)
+        return closest_activations, closest_distances  # (b_size, k)
 
     def predict_batch(self, X_test: Tensor):
         b_size = X_test.size(0)
@@ -38,7 +40,10 @@ class LinearBatchPredictorWrapper:
 
         distances = torch.vmap(trainer.distances)(X_test)  # (b_size, n_agents, 1)
         closest_distances, closest_k = torch.topk(
-            distances, k=self.trainer.k_closest, dim=1, largest=False
+            distances,
+            k=min(self.trainer.n_agents, self.trainer.k_closest),
+            dim=1,
+            largest=False,
         )  # (b_size, k, 1)
         closest_activations = torch.vmap(clipmin_if_all)(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))
@@ -46,7 +51,7 @@ class LinearBatchPredictorWrapper:
         closest_params = params[closest_k.squeeze()]  # (b_size, k, in_dim+1, out_dim)
         if b_size == 1:
             predictions = rls_predict(closest_params, X_test.view(-1)).view(
-                1, self.trainer.k_closest, -1
+                1, min(self.trainer.n_agents, self.trainer.k_closest), -1
             )  # (b_size, k, out_dim)
         else:
             predictions = torch.vmap(rls_predict)(closest_params, X_test).squeeze(

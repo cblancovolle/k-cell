@@ -19,7 +19,8 @@ class MPPIController:
         cost_kwargs={},
         state_constraints=(1, -1),
         action_constraints=(1, -1),
-        conservatism_coef=1e-3,
+        conservatism_coef=0,
+        task_coef=1,
         population_size=64,
         initial_std=1.0,
         temperature=0.3,
@@ -40,6 +41,7 @@ class MPPIController:
         self.cost_fn = cost_fn
         self.cost_kwargs = cost_kwargs
         self.temperature = temperature
+        self.task_coef = task_coef
 
     def reset(self):
         self.u_prev = None
@@ -73,13 +75,23 @@ class MPPIController:
         _x = torch.cat(
             (state_trajectories[:, 1:], u_samples), dim=2
         )  # (pop_size, horizon, in_dim)
-        closest_activations = self.predictor.batch_closest_activations(
+        (
+            closest_activations,
+            closest_distances,
+        ) = self.predictor.batch_closest_activations(
             _x.reshape(self.population_size * self.horizon, self.in_dim)
-        ).reshape(
+        )
+        closest_activations = closest_activations.reshape(
             self.population_size, self.horizon, -1
         )  # (pop_size, horizon, k)
-        max_activations = closest_activations.max(dim=-1).values  # (pop_size, horizon)
-        conservative_costs = max_activations.mean(dim=-1)  # (pop_size,)
+        closest_distances = closest_distances.reshape(
+            self.population_size, self.horizon, -1
+        )  # (pop_size, horizon, k)
+        # max_activations = closest_activations.mean(dim=2)  # (pop_size, horizon)
+        # conservative_costs = max_activations.max(dim=1).values  # (pop_size,)
+
+        distances_score = closest_distances.sum(dim=2)
+        conservative_costs = distances_score.sum(dim=1)  # (pop_size,)
 
         # TASK SPECIFIC COST
         state_trajectories = state_trajectories.clip(min_states, max_states)
@@ -88,7 +100,9 @@ class MPPIController:
         )  # (pop_size,)
 
         # GLOBAL COST
-        costs = task_costs + self.conservatism_coef * conservative_costs
+        costs = (
+            self.task_coef * task_costs + self.conservatism_coef * conservative_costs
+        )
         min_cost = torch.min(costs)
 
         _lambda = self.temperature
@@ -97,7 +111,7 @@ class MPPIController:
         delta_u = torch.sum(weights[:, None, None] * eps, dim=0)
         u_updated = u_nominal + delta_u
 
-        self.u_prev = np.vstack([u_updated[1:], u_updated[-1:]])
+        self.u_prev = torch.vstack([u_updated[1:], u_updated[-1:]])
 
         if return_infos:
             return u_updated.detach().cpu().numpy(), {

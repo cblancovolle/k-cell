@@ -149,8 +149,6 @@ class SQPController:
         precision = np.linalg.inv(covariance[:, 0]).reshape(
             self.horizon, self.in_dim * self.in_dim, order="F"
         )
-        # print("Covariance:", covariance[:, 0])
-        print("Eigenvalues:", np.linalg.eigvals(covariance[:, 0]).max())
 
         x, u, cost = self.problem(
             x0, x_prev, u_prev, A_flat, B_flat, c_flat, mean, precision
