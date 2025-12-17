@@ -49,10 +49,10 @@ class StateActionLinearizerWrapper:
         local_params = (weights.view(-1, 1, 1) * closest_params).sum(dim=0)
 
         closest_means = self.trainer.mean[closest_k].view(
-            -1, self.trainer.in_dim
+            -1, self.trainer.n_spatial
         )  # (k, in_dim)
         closest_covariances = self.trainer.cov[closest_k].view(
-            -1, self.trainer.in_dim, self.trainer.in_dim
+            -1, self.trainer.n_spatial, self.trainer.n_spatial
         )  # (k, in_dim, in_dim)
         # we use Toeplitz decomposition to ensure covariance is symmetric
         # (https://en.wikipedia.org/wiki/Toeplitz_matrix)
@@ -85,6 +85,7 @@ class StateActionLinearizerWrapper:
             dim=1, keepdims=True
         )  # (b_size, 1)
         weights = closest_activations / total_closest_activations  # (b_size, k)
+        # print("Closest k and weights:", closest_k, weights)
         local_params = (weights.view(b_size, -1, 1, 1) * closest_params).sum(
             dim=1
         )  # (b_size, in_dim+1, out_dim)

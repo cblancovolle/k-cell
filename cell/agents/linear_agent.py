@@ -11,17 +11,31 @@ class LinearAgent:
         ini_X: Tensor,  # (b_size, in_dim)
         ini_y: Tensor,  # (b_size, out_dim)
         forgetting=0.99,
+        spatial_factor=1,
     ):
         self.in_dim, self.out_dim = ini_X.size(1), ini_y.size(1)
         ini_X, ini_y = torch.atleast_2d(ini_X), torch.atleast_2d(ini_y)
         self.forgetting = forgetting
+        self.spatial_factor = spatial_factor
 
         self.theta, self.P = rls_init(ini_X, ini_y)
         if ini_X.size(0) > 1:
             self.cov, self.mean = torch.cov(ini_X.T), torch.mean(ini_X, dim=0)
         self.n = ini_X.size(0)
 
-    def spatialization(self, eps=1e-6):
+    def spatialization(
+        self,
+        eps=1e-6,
+        dims=None,
+    ):
+        if dims is not None:
+            return (
+                self.mean[dims],
+                (
+                    self.cov.view(self.in_dim, self.in_dim)
+                    + eps * torch.eye(self.in_dim)
+                )[np.ix_(dims, dims)],
+            )
         return (
             self.mean,
             self.cov.view(self.in_dim, self.in_dim) + eps * torch.eye(self.in_dim),

@@ -47,16 +47,8 @@ class OnlineTrainer:
         k_closest=4,
         jitter=1e-6,
         kernel_lengthscale=1.0,
-        spatial_dims=None,
     ):
         self.in_dim, self.out_dim = in_dim, out_dim
-        if spatial_dims is not None:
-            self.n_spatial = len(spatial_dims)
-            self.spatial_dims = spatial_dims
-        else:
-            self.n_spatial = self.in_dim
-            self.spatial_dims = torch.arange(self.in_dim)
-
         self.agent_cls = agent_cls
         self.agent_kwargs = agent_kwargs
         self.min_points = min_points
@@ -80,11 +72,9 @@ class OnlineTrainer:
         self.agents: list[Agent] = []
 
         self.cov = torch.empty(
-            (0, self.n_spatial, self.n_spatial), dtype=torch.float32
+            (0, in_dim, in_dim), dtype=torch.float32
         )  # for standardization
-        self.mean = torch.empty(
-            (0, self.n_spatial), dtype=torch.float32
-        )  # for standardization
+        self.mean = torch.empty((0, in_dim), dtype=torch.float32)  # for standardization
         self.confidence = torch.empty((0, 1), dtype=torch.float32)
         self._creation_step = torch.empty((0, 1), dtype=torch.float32)
         self.step = torch.as_tensor(0, dtype=torch.float32)
@@ -137,18 +127,18 @@ class OnlineTrainer:
                 torch.zeros((1, 1)),
             ]
         )
-        mean, cov = new_agent.spatialization(eps=self.jitter, dims=self.spatial_dims)
+        mean, cov = new_agent.spatialization(eps=self.jitter)
         # for standardization
         self.cov = torch.vstack(
             [
                 self.cov,
-                cov.view(1, self.n_spatial, self.n_spatial),
+                cov.view(1, self.in_dim, self.in_dim),
             ]
         )
         self.mean = torch.vstack(
             [
                 self.mean,
-                mean.view(1, self.n_spatial),
+                mean.view(1, self.in_dim),
             ]
         )
 
@@ -174,7 +164,7 @@ class OnlineTrainer:
         covs = self.cov[agents_idxs]  # (n_agents, n_features, n_features)
         P = torch.linalg.inv(covs)  # (n_agents, n_features, n_features)
         dm2 = torch.vmap(mahalanobis2, in_dims=(None, 0, 0))(
-            x_new[self.spatial_dims], P, means
+            x_new, P, means
         )  # (n_agents, 1)
         return dm2
 
@@ -272,7 +262,7 @@ class OnlineTrainer:
             )
             self.mean[agent_to_update], self.cov[agent_to_update] = self.agents[
                 agent_to_update
-            ].spatialization(eps=self.jitter, dims=self.spatial_dims)
+            ].spatialization(eps=self.jitter)
             point_has_been_processed = should_update_model or should_update_shape
 
         if n_neighbors > 1:
@@ -309,8 +299,7 @@ class OnlineTrainer:
             ).float()
 
             for idx, agent_to_update in enumerate(neighbors):
-                # should_update_model = Ci[idx].item() < 0
-                should_update_model = True
+                should_update_model = Ci[idx].item() < 0
                 should_update_shape = Ci[idx].item() > 0
 
                 self.agents[agent_to_update].learn_one(
@@ -321,7 +310,7 @@ class OnlineTrainer:
                 )
                 self.mean[agent_to_update], self.cov[agent_to_update] = self.agents[
                     agent_to_update
-                ].spatialization(eps=self.jitter, dims=self.spatial_dims)
+                ].spatialization(eps=self.jitter)
 
                 point_has_been_processed |= should_update_model or should_update_shape
 

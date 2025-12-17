@@ -4,8 +4,9 @@ from numpy import ndarray
 
 
 class StateActionPredictorWrapper:
-    def __init__(self, trainer: OnlineTrainer):
+    def __init__(self, trainer: OnlineTrainer, predict_deltas=False):
         self.trainer = trainer
+        self.predict_deltas = predict_deltas
 
     def predict_one(self, state: ndarray, action: ndarray):
         assert len(state.shape) == 1
@@ -32,6 +33,10 @@ class StateActionPredictorWrapper:
         states = [current_state.clone()]
         for i in range(horizon):
             x_test = torch.hstack((current_state.view(-1), actions[i]))
-            current_state = self.trainer.predict_one(x_test)
+            if self.predict_deltas:
+                current_state = current_state + self.trainer.predict_one(x_test)
+                # current_state += self.trainer.predict_one(x_test)
+            else:
+                current_state = self.trainer.predict_one(x_test)
             states += [current_state.clone()]
         return torch.vstack(states).numpy()

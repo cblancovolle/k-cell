@@ -94,8 +94,8 @@ class SQPController:
         B = opti.parameter(horizon, action_dim * state_dim)
         c = opti.parameter(horizon, 1 * state_dim)
 
-        mean = opti.parameter(horizon, self.model.n_spatial)
-        precision = opti.parameter(horizon, self.model.n_spatial * self.model.n_spatial)
+        mean = opti.parameter(horizon, in_dim)
+        precision = opti.parameter(horizon, in_dim * in_dim)
 
         # Symbolic Variables
         x = opti.variable(horizon + 1, state_dim)
@@ -131,14 +131,9 @@ class SQPController:
         conservative_obj = 0
         for t in range(0, u.shape[0]):
             mu = mean[t, :]
-            sigma = precision[t, :].reshape(
-                (self.model.n_spatial, self.model.n_spatial)
-            )
+            sigma = precision[t, :].reshape((in_dim, in_dim))
             conservative_obj = conservative_obj + quad_form(
-                (
-                    horzcat(x[t, :], u[t, :])[:, np.array(self.model.spatial_dims)] - mu
-                ).T,
-                sigma,
+                (horzcat(x[t, :], u[t, :]) - mu).T, sigma
             )
 
         task_objective = cost_fn(x, u, **cost_kwargs)
@@ -152,20 +147,16 @@ class SQPController:
         self.opti = opti
 
     def solve_local_QP(self, x0, x_prev, u_prev, return_infos=True):
-        print("Linearize around x_prev:", x_prev[:-1], u_prev)
         (A, B, c), (mean, covariance) = self.linearizer.local_model_many(
             np.hstack((x_prev[:-1], u_prev))
         )
-        print("A", A)
-        print("B", B)
-        print("c", c)
         A_flat = A.reshape(-1, self.state_dim * self.state_dim, order="F")
         B_flat = B.reshape(-1, self.action_dim * self.state_dim, order="F")
         c_flat = c.reshape(-1, 1 * self.state_dim, order="F")
 
-        mean = mean[:, 0].reshape(self.horizon, self.model.n_spatial)
+        mean = mean[:, 0].reshape(self.horizon, self.in_dim)
         precision = np.linalg.inv(covariance[:, 0]).reshape(
-            self.horizon, self.model.n_spatial * self.model.n_spatial, order="F"
+            self.horizon, self.in_dim * self.in_dim, order="F"
         )
 
         x, u, cost = self.problem(
@@ -186,7 +177,6 @@ class SQPController:
         u_prev = self.u_prev
         if u_prev is None:
             u_prev = np.zeros((self.horizon, self.action_dim))
-        u0 = u_prev
 
         # Initial rollout
         x_prev = self.predictor.predict_trajectory(
@@ -203,36 +193,35 @@ class SQPController:
             (x_lin, u_prev, cost), solve_infos = self.solve_local_QP(
                 x0, x_prev, u_prev, return_infos=True
             )
-            # self.opti.debug.show_infeasibilities()
 
-            # Line Search
-            alpha = 1.0
-            accepted = False
-            while alpha >= min_alpha:
-                u_candidate = u_prev + alpha * (u_prev - u0)
-                x_nl = self.predictor.predict_trajectory(
-                    x0, u_candidate
-                )  # Ground Truth
-                lin_error = np.linalg.norm(x_nl - x_lin) / (
-                    np.linalg.norm(x_lin) + 1e-6
-                )
-                if lin_error <= lin_error_tol:
-                    accepted = True
-                    break
-                alpha *= alpha_decay
-            if not accepted:
-                break
+            # # Line Search
+            # alpha = 1.0
+            # accepted = False
+            # while alpha >= min_alpha:
+            #     u_candidate = u_prev + alpha * (u_qp - u_prev)
+            #     x_nl = self.predictor.predict_trajectory(
+            #         x0, u_candidate
+            #     )  # Ground Truth
+            #     lin_error = np.linalg.norm(x_nl - x_lin) / (
+            #         np.linalg.norm(x_lin) + 1e-6
+            #     )
+            #     if lin_error <= lin_error_tol:
+            #         accepted = True
+            #         break
+            #     alpha *= alpha_decay
+            # if not accepted:
+            #     break
 
-            u_prev = u_candidate
-            x_prev = x_nl
-            infos[f"sqp_iter_{i}"] = {
-                "alpha": alpha,
-                "lin_error": lin_error,
-                "cost": cost,
-            }
+            # u_prev = u_candidate
+            # x_prev = x_nl
+            # infos[f"sqp_iter_{i}"] = {
+            #     "alpha": alpha,
+            #     "lin_error": lin_error,
+            #     "cost": cost,
+            # }
 
         # Receding horizon shift
-        self.u_prev = np.vstack([u_prev[1:], u_prev[-1:]]).clip(-2, 2)
+        self.u_prev = np.vstack([u_prev[1:], u_prev[-1:]])
 
         if return_infos:
             return u_prev, {
