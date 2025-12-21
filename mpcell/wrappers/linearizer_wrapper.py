@@ -29,8 +29,9 @@ class StateActionLinearizerWrapper:
 
     def local_model_one(
         self,
-        X_test: Tensor,  # (in_dim,)
-    ):
+        X_test: Tensor,
+        return_weights=False,
+    ):  # (in_dim,)
         X_test = torch.as_tensor(X_test, dtype=self.trainer.dtype)
         assert len(X_test.size()) == 1
         self.update_params()
@@ -60,13 +61,38 @@ class StateActionLinearizerWrapper:
             closest_covariances + closest_covariances.transpose(-1, -2)
         )
 
+        if return_weights:
+            return (
+                (
+                    local_params[: self.state_dim].numpy(),  # (state_dim, state_dim)
+                    local_params[
+                        self.state_dim : -1
+                    ].numpy(),  # (action_dim, state_dim)
+                    local_params[-1:].numpy(),  # (1, state_dim)
+                ),
+                (closest_means.numpy(), closest_covariances.numpy()),
+                (
+                    closest_params[
+                        :, : self.state_dim
+                    ].numpy(),  # (k, state_dim, state_dim)
+                    closest_params[
+                        :, self.state_dim : -1
+                    ].numpy(),  # (k, action_dim, state_dim)
+                    closest_params[:, -1:].numpy(),  # (k, 1, state_dim)
+                    weights,  # (k, 1)
+                ),
+            )
         return (
             local_params[: self.state_dim].numpy(),  # (state_dim, state_dim)
             local_params[self.state_dim : -1].numpy(),  # (action_dim, state_dim)
             local_params[-1:].numpy(),  # (1, state_dim)
         ), (closest_means.numpy(), closest_covariances.numpy())
 
-    def local_model_many(self, X_test: Tensor | ndarray):
+    def local_model_many(
+        self,
+        X_test: Tensor | ndarray,
+        return_weights=False,
+    ):
         X_test = torch.as_tensor(X_test, dtype=self.trainer.dtype)
         assert len(X_test.size()) == 2
         self.update_params()
@@ -75,7 +101,10 @@ class StateActionLinearizerWrapper:
 
         distances = torch.vmap(trainer.distances)(X_test).view(b_size, trainer.n_agents)
         closest_distances, closest_k = torch.topk(
-            distances, k=self.trainer.k_closest, largest=False, dim=1
+            distances,
+            k=min(self.trainer.n_agents, self.trainer.k_closest),
+            largest=False,
+            dim=1,
         )  # (b_size, k)
         closest_activations = torch.vmap(clipmin_if_all)(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))
@@ -98,6 +127,29 @@ class StateActionLinearizerWrapper:
             closest_covariances + closest_covariances.transpose(-1, -2)
         )
 
+        if return_weights:
+            return (
+                (
+                    local_params[
+                        :, : self.state_dim
+                    ].numpy(),  # (b_size, state_dim, state_dim)
+                    local_params[
+                        :, self.state_dim : -1
+                    ].numpy(),  # (b_size, action_dim, state_dim)
+                    local_params[:, -1:].numpy(),  # (b_size, 1, state_dim)
+                ),
+                (closest_means.numpy(), closest_covariances.numpy()),
+                (
+                    closest_params[
+                        :, :, : self.state_dim
+                    ].numpy(),  # (b_size, k, state_dim, state_dim)
+                    closest_params[
+                        :, :, self.state_dim : -1
+                    ].numpy(),  # (b_size, k, action_dim, state_dim)
+                    closest_params[:, :, -1:].numpy(),  # (b_size, k, 1, state_dim)
+                    weights,  # (b_size, k, 1)
+                ),
+            )
         return (
             local_params[:, : self.state_dim].numpy(),  # (b_size, state_dim, state_dim)
             local_params[

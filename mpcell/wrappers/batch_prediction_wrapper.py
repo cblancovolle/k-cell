@@ -10,9 +10,10 @@ from cell.trainers.online_trainer import OnlineTrainer
 
 
 class LinearBatchPredictorWrapper:
-    def __init__(self, trainer: OnlineTrainer):
+    def __init__(self, trainer: OnlineTrainer, predict_deltas=False):
         assert trainer.agent_cls in [LinearAgent]
         self.trainer = trainer
+        self.predict_deltas = predict_deltas
 
     def update_params(self):
         self.params = torch.stack(
@@ -34,7 +35,7 @@ class LinearBatchPredictorWrapper:
         )
         return closest_activations, closest_distances  # (b_size, k)
 
-    def predict_batch(self, X_test: Tensor):
+    def predict_batch(self, X_test: Tensor, return_individual_predictions=False):
         b_size = X_test.size(0)
         trainer, params = self.trainer, self.params
 
@@ -62,9 +63,14 @@ class LinearBatchPredictorWrapper:
             -1, 1, 1
         )  # (b_size, k, 1)
         final_prediction = torch.sum(predictions * weights, dim=1)  # (b_size, out_dim)
+
+        if return_individual_predictions:
+            return final_prediction, predictions, weights
         return final_prediction
 
-    def predict_trajectory_batch(self, state_ini: ndarray, actions: ndarray):
+    def predict_trajectory_batch(
+        self, state_ini: ndarray, actions: ndarray, return_individual_predictions=False
+    ):
         self.update_params()
         assert len(actions.shape) == 3
         assert len(state_ini.shape) == 2
@@ -80,10 +86,34 @@ class LinearBatchPredictorWrapper:
         )
 
         states = [current_state.clone()]
+        global_predictions = []
+        individual_predictions = []
+        weights = []
         for i in range(horizon):
             x_test = torch.hstack(
                 (current_state, actions[:, i])
             )  # (b_size, state_dim + action_dim)
-            current_state = self.predict_batch(x_test)  # (b_size, state_dim)
+            if self.predict_deltas:
+                deltas, preds, w = self.predict_batch(
+                    x_test, return_individual_predictions=True
+                )  # (b_size, state_dim)
+                current_state = current_state + deltas
+            else:
+                current_state, preds, w = self.predict_batch(
+                    x_test, individual_predictions=True
+                )  # (b_size, state_dim)
             states += [current_state.clone()]
+            global_predictions += [deltas]
+            individual_predictions += [preds]
+            weights += [w]
+
+        if return_individual_predictions:
+            return (
+                torch.stack(states, dim=1),
+                torch.stack(global_predictions, dim=1),  # (b_size, horizon, state_dim)
+                torch.stack(
+                    individual_predictions, dim=1
+                ),  # (b_size, horizon, k, state_dim)
+                torch.stack(weights, dim=1),  # (b_size, horizon, k, 1)
+            )
         return torch.stack(states, dim=1)

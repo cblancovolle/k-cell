@@ -6,6 +6,7 @@ from cell.trainers.online_trainer import OnlineTrainer
 from mpcell.common.constraints import LinearConstraint
 from mpcell.wrappers.batch_prediction_wrapper import LinearBatchPredictorWrapper
 from torch.distributions import MultivariateNormal
+from scipy.stats import chi2
 
 
 class MPPIController:
@@ -24,13 +25,20 @@ class MPPIController:
         population_size=64,
         initial_std=1.0,
         temperature=0.3,
+        predict_deltas=False,
+        warmstart_with_previous=True,
+        introspection_cost="disagreement",
     ):
         assert model.agent_cls in [LinearAgent]
+        assert introspection_cost in ["disagreement", "distance", "activation"]
+        self.introspection_cost = introspection_cost
         self.model = model
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.in_dim = state_dim + action_dim
-        self.predictor: LinearBatchPredictorWrapper = LinearBatchPredictorWrapper(model)
+        self.predictor: LinearBatchPredictorWrapper = LinearBatchPredictorWrapper(
+            model, predict_deltas=predict_deltas
+        )
         self.horizon = horizon
         self.state_constraints = state_constraints
         self.action_constraints = action_constraints
@@ -42,6 +50,8 @@ class MPPIController:
         self.cost_kwargs = cost_kwargs
         self.temperature = temperature
         self.task_coef = task_coef
+        self.predict_deltas = predict_deltas
+        self.warmstart_with_previous = warmstart_with_previous
 
     def reset(self):
         self.u_prev = None
@@ -67,31 +77,76 @@ class MPPIController:
 
         ini_state = np.vstack([state] * self.population_size)
 
-        state_trajectories = self.predictor.predict_trajectory_batch(
-            ini_state, u_samples
-        )  # (pop_size, horizon+1, state_dim)
-
-        # CONSERVATIVE COST
-        _x = torch.cat(
-            (state_trajectories[:, 1:], u_samples), dim=2
-        )  # (pop_size, horizon, in_dim)
         (
-            closest_activations,
-            closest_distances,
-        ) = self.predictor.batch_closest_activations(
-            _x.reshape(self.population_size * self.horizon, self.in_dim)
-        )
-        closest_activations = closest_activations.reshape(
-            self.population_size, self.horizon, -1
-        )  # (pop_size, horizon, k)
-        closest_distances = closest_distances.reshape(
-            self.population_size, self.horizon, -1
-        )  # (pop_size, horizon, k)
-        # max_activations = closest_activations.mean(dim=2)  # (pop_size, horizon)
-        # conservative_costs = max_activations.max(dim=1).values  # (pop_size,)
+            state_trajectories,
+            global_predictions,
+            individual_predictions,
+            individual_weights,
+        ) = self.predictor.predict_trajectory_batch(
+            ini_state, u_samples, return_individual_predictions=True
+        )  # (pop_size, horizon+1, state_dim), (pop_size, horizon+1, k, state_dim), (pop_size, horizon+1, k, 1)
 
-        distances_score = closest_distances.sum(dim=2)
-        conservative_costs = distances_score.sum(dim=1)  # (pop_size,)
+        disagreement = (
+            torch.norm(
+                global_predictions.view(
+                    self.population_size, self.horizon, 1, self.state_dim
+                )
+                - individual_predictions,
+                p=2,
+                dim=-1,
+            )
+            * individual_weights.view(self.population_size, self.horizon, -1)
+        ).sum(
+            dim=2
+        )  # (pop_size, horizon) higher = agents do not agree
+
+        if self.introspection_cost == "disagreement":
+            gamma = 0.99
+            discounted_disagreement = (
+                (disagreement * gamma * torch.arange(self.horizon).view(1, -1))
+                .sum(dim=1)
+                .view(self.population_size)
+            )  # (pop_size,)
+            conservative_costs = discounted_disagreement  # (pop_size,)
+        elif self.introspection_cost == "activation":
+            _x = torch.cat(
+                (state_trajectories[:, 1:], u_samples), dim=2
+            )  # (pop_size, horizon, in_dim)
+            (
+                closest_activations,
+                closest_distances,
+            ) = self.predictor.batch_closest_activations(
+                _x.reshape(self.population_size * self.horizon, self.in_dim)
+            )
+            closest_activations = closest_activations.reshape(
+                self.population_size, self.horizon, -1
+            )  # (pop_size, horizon, k)
+            closest_distances = closest_distances.reshape(
+                self.population_size, self.horizon, -1
+            )  # (pop_size, horizon, k)
+            max_activations = closest_activations.sum(dim=2)  # (pop_size, horizon)
+            conservative_costs = max_activations.sum(dim=1)  # (pop_size,)
+        elif self.introspection_cost == "distance":
+            _x = torch.cat(
+                (state_trajectories[:, 1:], u_samples), dim=2
+            )  # (pop_size, horizon, in_dim)
+            (
+                closest_activations,
+                closest_distances,
+            ) = self.predictor.batch_closest_activations(
+                _x.reshape(self.population_size * self.horizon, self.in_dim)
+            )
+            closest_distances = closest_distances.reshape(
+                self.population_size, self.horizon, -1
+            )  # (pop_size, horizon, k)
+            # distances_score = closest_distances.min(dim=2).values
+            distances_score = (
+                closest_distances
+                * individual_weights.view(self.population_size, self.horizon, -1)
+            ).sum(dim=-1)
+            conservative_costs = distances_score.sum(dim=1)  # (pop_size,)
+            # conservative_costs = distances_score.mean(dim=1)  # (pop_size,)
+            # conservative_costs = distances_score[:, -1]  # (pop_size,)
 
         # TASK SPECIFIC COST
         state_trajectories = state_trajectories.clip(min_states, max_states)
@@ -111,7 +166,10 @@ class MPPIController:
         delta_u = torch.sum(weights[:, None, None] * eps, dim=0)
         u_updated = u_nominal + delta_u
 
-        self.u_prev = torch.vstack([u_updated[1:], u_updated[-1:]])
+        if self.warmstart_with_previous:
+            self.u_prev = torch.vstack([u_updated[1:], u_updated[-1:]])
+        else:
+            self.u_prev = None
 
         if return_infos:
             return u_updated.detach().cpu().numpy(), {

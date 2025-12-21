@@ -35,7 +35,6 @@ class StateActionPredictorWrapper:
             x_test = torch.hstack((current_state.view(-1), actions[i]))
             if self.predict_deltas:
                 current_state = current_state + self.trainer.predict_one(x_test)
-                # current_state += self.trainer.predict_one(x_test)
             else:
                 current_state = self.trainer.predict_one(x_test)
             states += [current_state.clone()]
