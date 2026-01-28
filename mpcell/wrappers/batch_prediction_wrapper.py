@@ -14,6 +14,8 @@ class LinearBatchPredictorWrapper:
         assert trainer.agent_cls in [LinearAgent]
         self.trainer = trainer
         self.predict_deltas = predict_deltas
+        if trainer.n_agents > 0:
+            self.update_params()
 
     def update_params(self):
         self.params = torch.stack(

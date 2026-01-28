@@ -31,7 +31,10 @@ class StateActionLinearizerWrapper:
         self,
         X_test: Tensor,
         return_weights=False,
+        k=None,
     ):  # (in_dim,)
+        if k is None:
+            k = self.trainer.k_closest
         X_test = torch.as_tensor(X_test, dtype=self.trainer.dtype)
         assert len(X_test.size()) == 1
         self.update_params()
@@ -39,7 +42,7 @@ class StateActionLinearizerWrapper:
 
         distances = trainer.distances(X_test).T  # (n_agents, 1)
         closest_distances, closest_k = torch.topk(
-            distances, k=self.trainer.k_closest, largest=False
+            distances, k=k, largest=False
         )  # (k, 1)
         closest_activations = clipmin_if_all(
             torch.exp(-0.5 * closest_distances / (trainer.l**2))

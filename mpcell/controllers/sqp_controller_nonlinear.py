@@ -98,8 +98,10 @@ class SQPController:
         B = opti.parameter(horizon, action_dim * state_dim)
         c = opti.parameter(horizon, 1 * state_dim)
 
-        mean = opti.parameter(horizon, self.model.n_spatial)
-        precision = opti.parameter(horizon, self.model.n_spatial * self.model.n_spatial)
+        means = opti.parameter(horizon, self.model.k_closest * self.model.n_spatial)
+        precisions = opti.parameter(
+            horizon, self.model.k_closest * self.model.n_spatial * self.model.n_spatial
+        )
 
         # Symbolic Variables
         x = opti.variable(horizon + 1, state_dim)
@@ -132,18 +134,32 @@ class SQPController:
                 opti.subject_to(state_constraint(x[t, :]) <= 0)
 
         # Introspection term
+        lambd = 0.3
         conservative_obj = 0
         for t in range(0, u.shape[0]):
-            mu = mean[t, :]
-            sigma = precision[t, :].reshape(
-                (self.model.n_spatial, self.model.n_spatial)
+            step_means = means[t, :].reshape(
+                (self.model.k_closest, self.model.n_spatial)
             )
-            conservative_obj = conservative_obj + quad_form(
-                (
-                    horzcat(x[t, :], u[t, :])[:, np.array(self.model.spatial_dims)] - mu
-                ).T,
-                sigma,
+            step_precisions = precisions[t, :].reshape(
+                (self.model.k_closest, self.model.n_spatial * self.model.n_spatial)
             )
+
+            ds = []
+            for k in range(self.model.k_closest):
+                mu = step_means[k, :]
+                sigma = step_precisions[k, :].reshape(
+                    (self.model.n_spatial, self.model.n_spatial)
+                )
+                d2 = quad_form(
+                    (
+                        horzcat(x[t, :], u[t, :])[:, np.array(self.model.spatial_dims)]
+                        - mu
+                    ).T,
+                    sigma,
+                )
+                ds += [d2]
+            ds = vertcat(*ds)
+            conservative_obj = conservative_obj - lambd * logsumexp(-d2 / lambd)
 
         task_objective = cost_fn(x, u, **cost_kwargs)
         objective = (
@@ -152,7 +168,7 @@ class SQPController:
         opti.minimize(objective)
 
         problem = opti.to_function(
-            "F", [x0, x_prev, u, A, B, c, mean, precision], [x, u, objective]
+            "F", [x0, x_prev, u, A, B, c, means, precisions], [x, u, objective]
         )
         self.problem = problem
         self.opti = opti
@@ -169,9 +185,21 @@ class SQPController:
         B_flat = B.reshape(-1, self.action_dim * self.state_dim, order="F")
         c_flat = c.reshape(-1, 1 * self.state_dim, order="F")
 
-        mean = mean[:, 0].reshape(self.horizon, self.model.n_spatial)
-        precision = np.linalg.inv(covariance[:, 0]).reshape(
-            self.horizon, self.model.n_spatial * self.model.n_spatial, order="F"
+        if self.model.n_agents < self.model.k_closest:
+            mean = np.concat([mean] * self.model.k_closest, axis=1)[
+                :, : self.model.k_closest
+            ]
+            covariance = np.concat([covariance] * self.model.k_closest, axis=1)[
+                :, : self.model.k_closest
+            ]
+
+        mean = mean.reshape(
+            self.horizon, self.model.k_closest * self.model.n_spatial, order="F"
+        )
+        precision = np.linalg.inv(covariance).reshape(
+            self.horizon,
+            self.model.k_closest * self.model.n_spatial * self.model.n_spatial,
+            order="F",
         )
 
         x, u, cost = self.problem(
@@ -237,8 +265,6 @@ class SQPController:
                     "lin_error": lin_error,
                     "cost": cost,
                 }
-            else:
-                x_prev = x_lin
 
         # Receding horizon shift
         self.u_prev = np.vstack([u_prev[1:], u_prev[-1:]]).clip(-2, 2)

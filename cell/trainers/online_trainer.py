@@ -312,6 +312,8 @@ class OnlineTrainer:
                 # should_update_model = Ci[idx].item() < 0
                 should_update_model = True
                 should_update_shape = Ci[idx].item() > 0
+                # should_update_shape = Ci[idx].item() < 0
+                # should_update_shape = True
 
                 self.agents[agent_to_update].learn_one(
                     x_new.view(self.in_dim),
