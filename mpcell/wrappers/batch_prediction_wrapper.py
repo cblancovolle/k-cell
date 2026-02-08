@@ -22,7 +22,7 @@ class LinearBatchPredictorWrapper:
             [a.theta for a in self.trainer.agents]
         )  # (n_agents, in_dim + 1, out_dim)
 
-    def batch_closest_activations(self, X_test: Tensor):
+    def batch_closest_activations(self, X_test: Tensor, clip=True):
         b_size = X_test.size(0)
         trainer = self.trainer
         distances = torch.vmap(trainer.distances)(X_test)
@@ -32,9 +32,14 @@ class LinearBatchPredictorWrapper:
             dim=1,
             largest=False,
         )  # (b_size, k, 1)
-        closest_activations = torch.vmap(clipmin_if_all)(
-            torch.exp(-0.5 * closest_distances / (trainer.l**2))
-        )
+        if clip:
+            closest_activations = torch.vmap(clipmin_if_all)(
+                torch.exp(-0.5 * closest_distances / (trainer.l**2))
+            )
+        else:
+            closest_activations =(
+                torch.exp(-0.5 * closest_distances / (trainer.l**2))
+            )
         return closest_activations, closest_distances  # (b_size, k)
 
     def predict_batch(self, X_test: Tensor, return_individual_predictions=False):

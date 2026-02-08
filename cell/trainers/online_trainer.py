@@ -212,6 +212,7 @@ class OnlineTrainer:
                 max_activation=0,
                 mean_age=0,
                 mean_confidence=0,
+                max_confidence=np.nan,
             )
         elif self.n_agents <= 1:
             # self.buffer.append((x_new, y_new))
@@ -226,6 +227,7 @@ class OnlineTrainer:
                 max_activation=0,
                 mean_age=0,
                 mean_confidence=0,
+                max_confidence=np.nan,
             )
 
         # check neighbors
@@ -374,6 +376,9 @@ class OnlineTrainer:
             max_activation=activations.max().numpy(),
             mean_age=self._age().mean().numpy(),
             mean_confidence=self.confidence.mean().numpy(),
+            max_confidence=self.confidence[[closest[closest < self.n_agents]]]
+            .max()
+            .numpy(),
         )
 
     def predict_one(self, x_test: Tensor):
